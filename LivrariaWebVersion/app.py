@@ -46,23 +46,34 @@ def get_connection():
     return conn
 
 def init_db():
-    """Inicializa o banco de dados e cria as tabelas 'livros' e 'vendas'."""
+    """
+    Inicializa o banco de dados e cria/atualiza as tabelas:
+    1. LIVROS (Atualizada para ter campos de identificação do CSV de vendas)
+    2. VENDAS (Existente)
+    3. CLIENTES (Nova)
+    """
     ensure_directories()
     with get_connection() as conn:
         cur = conn.cursor()
         
-        # Tabela LIVROS (original)
+        # 1. Tabela LIVROS (ATUALIZADA)
+        # Campos atualizados para: book_id, title, author, genre, publisher, isbn
         cur.execute("""
             CREATE TABLE IF NOT EXISTS livros (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                titulo TEXT NOT NULL,
-                autor TEXT NOT NULL,
+                book_id TEXT UNIQUE NOT NULL, -- Novo campo de ID interno do livro
+                isbn TEXT UNIQUE,             -- ISBN é o ID global
+                title TEXT NOT NULL,          -- Nome do livro
+                author TEXT NOT NULL,         -- Nome do autor
+                genre TEXT,
+                publisher TEXT,
                 ano_publicacao INTEGER,
-                preco REAL
+                preco REAL,
+                estoque INTEGER
             )
         """)
         
-        # Nova Tabela VENDAS
+        # 2. Tabela VENDAS (Mantida do pedido anterior)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS vendas (
                 sale_id INTEGER PRIMARY KEY,
@@ -91,10 +102,23 @@ def init_db():
                 stock_after INTEGER
             )
         """)
+        
+        # 3. Tabela CLIENTES (NOVA)
+        # Baseada em campos de cliente presentes no CSV de vendas
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS clientes (
+                customer_id TEXT PRIMARY KEY,
+                customer_age INTEGER,
+                customer_gender TEXT,
+                city TEXT
+            )
+        """)
+        
         conn.commit()
 
 # ---------------- backups ----------------
 def backup_db(reason="manual"):
+    # ... (código da função backup_db)
     ensure_directories()
     if not DB_FILE.exists():
         init_db()
@@ -107,6 +131,7 @@ def backup_db(reason="manual"):
     return str(path)
 
 def prune_old_backups():
+    # ... (código da função prune_old_backups)
     files = sorted(BACKUP_DIR.glob(f"{BACKUP_PREFIX}*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
     for old in files[MAX_BACKUPS_TO_KEEP:]:
         try:
@@ -116,6 +141,7 @@ def prune_old_backups():
 
 # ---------------- validation ----------------
 def validar_ano(ano_str):
+    # ... (código da função validar_ano)
     try:
         ano = int(ano_str)
         if 1000 <= ano <= datetime.now().year + 1:
@@ -125,6 +151,7 @@ def validar_ano(ano_str):
     return None
 
 def validar_preco(preco_str):
+    # ... (código da função validar_preco)
     try:
         preco = float(preco_str)
         if preco >= 0:
@@ -137,21 +164,25 @@ def validar_preco(preco_str):
 def listar_livros():
     with get_connection() as conn:
         cur = conn.cursor()
-        # Usamos o row_factory acima, mas a lógica de retorno do Flask exige a lista de tuplas
-        cur.execute("SELECT id, titulo, autor, ano_publicacao, preco FROM livros ORDER BY id")
-        # Converte para lista de tuplas se row_factory estiver em uso, para compatibilidade com o código original
+        # Colunas ajustadas ao novo esquema
+        cur.execute("SELECT id, book_id, title, author, genre, publisher, isbn, ano_publicacao, preco, estoque FROM livros ORDER BY id")
         return [tuple(row) for row in cur.fetchall()]
 
-def add_livro(titulo, autor, ano, preco):
+def add_livro(title, author, isbn, book_id, genre, publisher, ano=None, preco=None, estoque=None):
     backup_db(reason="add_web")
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("INSERT INTO livros (titulo, autor, ano_publicacao, preco) VALUES (?, ?, ?, ?)",
-                    (titulo.strip(), autor.strip(), ano, preco))
+        # Query ajustada ao novo esquema
+        cur.execute("""
+            INSERT INTO livros (book_id, isbn, title, author, genre, publisher, ano_publicacao, preco, estoque) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (book_id.strip(), isbn.strip(), title.strip(), author.strip(), genre.strip(), publisher.strip(), ano, preco, estoque))
         conn.commit()
         return cur.lastrowid
 
 def update_preco(livro_id, novo_preco):
+    # ... (código da função update_preco)
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT id FROM livros WHERE id = ?", (livro_id,))
@@ -165,6 +196,7 @@ def update_preco(livro_id, novo_preco):
         return True
 
 def delete_livro(livro_id):
+    # ... (código da função delete_livro)
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT id FROM livros WHERE id = ?", (livro_id,))
@@ -181,7 +213,8 @@ def search_autor(q):
     with get_connection() as conn:
         cur = conn.cursor()
         like = f"%{q}%"
-        cur.execute("SELECT id, titulo, autor, ano_publicacao, preco FROM livros WHERE autor LIKE ? ORDER BY id", (like,))
+        # Colunas ajustadas ao novo esquema
+        cur.execute("SELECT id, book_id, title, author, genre, publisher, isbn, ano_publicacao, preco, estoque FROM livros WHERE author LIKE ? ORDER BY id", (like,))
         return [tuple(row) for row in cur.fetchall()]
 
 # ---------------- CSV ----------------
@@ -189,16 +222,17 @@ def export_csv_to_memory():
     rows = listar_livros()
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["titulo", "autor", "ano_publicacao", "preco"])
-    for _id, titulo, autor, ano, preco in rows:
-        writer.writerow([titulo, autor, ano if ano is not None else "", preco if preco is not None else ""])
+    # Cabeçalho ajustado
+    writer.writerow(["id", "book_id", "title", "author", "genre", "publisher", "isbn", "ano_publicacao", "preco", "estoque"])
+    for _id, book_id, title, author, genre, publisher, isbn, ano, preco, estoque in rows:
+        writer.writerow([_id, book_id or '', title, author, genre or '', publisher or '', isbn or '', ano or '', preco or '', estoque or ''])
     return output.getvalue().encode("utf-8")
 
 def detect_delimiter(sample_line):
     return "," if sample_line.count(",") >= sample_line.count(";") else ";"
 
 def import_csv_file(file_stream, filename):
-    """Importa dados, detectando se é um arquivo de 'livros' ou 'vendas'."""
+    """Importa dados, detectando se é um arquivo de 'livros' ou 'vendas' e tratando clientes."""
     text = file_stream.read().decode("utf-8")
     lines = text.splitlines()
     if not lines:
@@ -206,20 +240,18 @@ def import_csv_file(file_stream, filename):
     
     delim = detect_delimiter(lines[0])
     
-    # Usa DictReader para leitura
     reader = csv.DictReader(io.StringIO(text), delimiter=delim)
     rows = list(reader)
     if not rows:
         return 0
     
-    # 1. Determina o tipo de tabela com base nos nomes das colunas
     fieldnames = [f.lower() for f in reader.fieldnames]
     
     is_vendas = 'sale_id' in fieldnames and 'total_amount' in fieldnames
-    is_livros = 'titulo' in fieldnames or 'title' in fieldnames
+    is_livros = 'isbn' in fieldnames and 'title' in fieldnames and 'author' in fieldnames
     
     if not is_vendas and not is_livros:
-        return 0 # Formato desconhecido
+        return 0 
 
     backup_db(reason="import_web")
     inserted = 0
@@ -227,21 +259,38 @@ def import_csv_file(file_stream, filename):
         cur = conn.cursor()
 
         if is_vendas:
-            # Lógica de importação para a tabela VENDAS
+            # Lógica de importação para VENDAS E CLIENTES
             vendas_cols = [
                 'sale_id', 'timestamp', 'book_id', 'title', 'author', 'genre', 'publisher', 'isbn', 
                 'quantity', 'unit_price', 'discount_pct', 'discount_amount', 'total_amount', 
                 'customer_id', 'customer_age', 'customer_gender', 'city', 'payment_method', 
                 'channel', 'promo_code', 'returned', 'rating', 'stock_before', 'stock_after'
             ]
-            insert_sql = f"INSERT INTO vendas ({', '.join(vendas_cols)}) VALUES ({', '.join('?' * len(vendas_cols))})"
+            insert_vendas_sql = f"INSERT INTO vendas ({', '.join(vendas_cols)}) VALUES ({', '.join('?' * len(vendas_cols))})"
+            
+            # Query para inserir/atualizar clientes (UPSERT)
+            insert_clientes_sql = """
+                INSERT OR REPLACE INTO clientes (customer_id, customer_age, customer_gender, city) 
+                VALUES (?, ?, ?, ?)
+            """
             
             for r in rows:
                 try:
-                    # Normaliza as chaves da linha para acesso case-insensitive
                     row_data = {k.lower(): v for k, v in r.items()}
                     
-                    # Prepara os dados, convertendo tipos e tratando valores vazios/nulos
+                    # 1. Processa Cliente (INSERT OR REPLACE)
+                    customer_id = row_data.get('customer_id') or None
+                    if customer_id:
+                        cliente_data = [
+                            customer_id,
+                            int(row_data.get('customer_age')) if row_data.get('customer_age') else None,
+                            row_data.get('customer_gender') or None,
+                            row_data.get('city') or None
+                        ]
+                        # Insere o cliente primeiro
+                        cur.execute(insert_clientes_sql, cliente_data)
+                    
+                    # 2. Processa Venda
                     data = [
                         int(row_data.get('sale_id')) if row_data.get('sale_id') else 0,
                         row_data.get('timestamp') or None,
@@ -256,7 +305,7 @@ def import_csv_file(file_stream, filename):
                         float(row_data.get('discount_pct')) if row_data.get('discount_pct') else None,
                         float(row_data.get('discount_amount')) if row_data.get('discount_amount') else None,
                         float(row_data.get('total_amount')) if row_data.get('total_amount') else None,
-                        row_data.get('customer_id') or None,
+                        customer_id,
                         int(row_data.get('customer_age')) if row_data.get('customer_age') else None,
                         row_data.get('customer_gender') or None,
                         row_data.get('city') or None,
@@ -269,77 +318,46 @@ def import_csv_file(file_stream, filename):
                         int(row_data.get('stock_after')) if row_data.get('stock_after') else None
                     ]
                     
-                    # Validação mínima para campos NOT NULL
                     if data[1] is None or data[0] == 0:
                         continue 
 
-                    cur.execute(insert_sql, data)
+                    cur.execute(insert_vendas_sql, data)
                     inserted += 1
                 except (ValueError, sqlite3.IntegrityError):
-                    # Ignora linhas com erro de conversão de tipo ou PK duplicada
                     pass
 
         elif is_livros:
-            # Lógica de importação original para a tabela LIVROS
+            # Lógica de importação para a tabela LIVROS (Adaptada ao novo esquema)
+            # Assume que o CSV de livros agora tem: isbn, title, author, genre, publisher, book_id, estoque, preco, ano_publicacao
             for r in rows:
-                titulo = (r.get("titulo") or r.get("title") or "").strip()
-                autor = (r.get("autor") or r.get("author") or "").strip()
+                book_id = r.get("book_id") or ""
+                isbn = r.get("isbn") or ""
+                title = (r.get("title") or r.get("titulo") or "").strip()
+                author = (r.get("author") or r.get("autor") or "").strip()
+                genre = r.get("genre") or ""
+                publisher = r.get("publisher") or ""
                 ano_raw = r.get("ano_publicacao") or r.get("year") or ""
                 preco_raw = r.get("preco") or r.get("price") or ""
+                estoque_raw = r.get("estoque") or r.get("stock") or ""
                 
                 ano = validar_ano(ano_raw) if ano_raw != "" else None
                 preco = validar_preco(preco_raw) if preco_raw != "" else None
+                estoque = int(estoque_raw) if estoque_raw.isdigit() else None
                 
-                if titulo and autor:
-                    cur.execute("INSERT INTO livros (titulo, autor, ano_publicacao, preco) VALUES (?, ?, ?, ?)",
-                                (titulo, autor, ano, preco))
-                    inserted += 1
+                if title and author and book_id and isbn:
+                    try:
+                        cur.execute("""
+                            INSERT INTO livros (book_id, isbn, title, author, genre, publisher, ano_publicacao, preco, estoque) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (book_id, isbn, title, author, genre, publisher, ano, preco, estoque))
+                        inserted += 1
+                    except sqlite3.IntegrityError:
+                        # Pula livros com book_id ou isbn duplicado
+                        pass
         
         conn.commit()
     return inserted
-
-# ---------------- Reports ----------------
-def gerar_relatorio_html():
-    rows = listar_livros()
-    ensure_directories()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    html = ["<!doctype html><html><head><meta charset='utf-8'><title>Relatório</title>",
-            "<style>body{font-family:Arial;padding:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background:#f8f9fa}</style>",
-            "</head><body>",
-            f"<h1>Relatório de Livros</h1><p>Gerado em {now}</p>",
-            "<table><thead><tr><th>ID</th><th>Título</th><th>Autor</th><th>Ano</th><th>Preço</th></tr></thead><tbody>"]
-    for _id, titulo, autor, ano, preco in rows:
-        preco_s = f"R$ {preco:.2f}" if preco is not None else ""
-        html.append(f"<tr><td>{_id}</td><td>{titulo}</td><td>{autor}</td><td>{ano or ''}</td><td>{preco_s}</td></tr>")
-    html.append("</tbody></table></body></html>")
-    path = EXPORT_DIR / "relatorio_livros.html"
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(html))
-    return str(path)
-
-def gerar_relatorio_pdf():
-    if not REPORTLAB_AVAILABLE:
-        raise RuntimeError("reportlab não está instalado. pip install reportlab")
-    rows = listar_livros()
-    ensure_directories()
-    path = EXPORT_DIR / "relatorio_livros.pdf"
-    doc = SimpleDocTemplate(str(path), pagesize=A4, leftMargin=15*mm, rightMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
-    styles = getSampleStyleSheet()
-    elems = [Paragraph("Relatório de Livros", styles['Title']),
-             Paragraph(f"Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']),
-             Spacer(1,6)]
-    data = [["ID","Título","Autor","Ano","Preço"]]
-    for _id, titulo, autor, ano, preco in rows:
-        preco_s = f"R$ {preco:.2f}" if preco is not None else ""
-        data.append([str(_id), titulo, autor, str(ano) if ano else "", preco_s])
-    table = Table(data, colWidths=[30*mm, 70*mm, 60*mm, 25*mm, 30*mm])
-    table.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor("#f2f2f2")),
-                               ('GRID',(0,0),(-1,-1),0.4,colors.grey),
-                               ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
-                               ('ALIGN',(-2,1),(-1,-1),'RIGHT')]))
-    elems.append(table)
-    doc.build(elems)
-    return str(path)
 
 # ---------------- Routes ----------------
 @app.route("/")
@@ -347,100 +365,54 @@ def index():
     init_db()
     return render_template("index.html")
 
+# ... (Mantenha as demais rotas /api/books, /api/search, /api/update, etc.)
+
 @app.route("/api/books", methods=["GET"])
 def api_list():
     rows = listar_livros()
-    books = [{"id":r[0],"titulo":r[1],"autor":r[2],"ano_publicacao":r[3],"preco":r[4]} for r in rows]
+    # Dicionário de retorno ajustado ao novo esquema
+    books = [{"id":r[0],"book_id":r[1],"title":r[2],"author":r[3],"genre":r[4],"publisher":r[5],"isbn":r[6],"ano_publicacao":r[7],"preco":r[8],"estoque":r[9]} for r in rows]
     return jsonify(books)
 
 @app.route("/api/books", methods=["POST"])
 def api_add():
     data = request.json or {}
-    titulo = (data.get("titulo") or "").strip()
-    autor = (data.get("autor") or "").strip()
+    # Campos obrigatórios e opcionais atualizados
+    title = (data.get("title") or "").strip()
+    author = (data.get("author") or "").strip()
+    isbn = (data.get("isbn") or "").strip()
+    book_id = (data.get("book_id") or "").strip()
+    genre = (data.get("genre") or "").strip()
+    publisher = (data.get("publisher") or "").strip()
     ano = data.get("ano_publicacao")
     preco = data.get("preco")
-    if not titulo or not autor:
-        return jsonify({"error":"Título e autor obrigatórios."}), 400
-    ano_val = None
-    if ano not in (None, ""):
-        ano_val = validar_ano(ano)
-        if ano_val is None:
-            return jsonify({"error":"Ano inválido."}), 400
-    preco_val = None
-    if preco not in (None, ""):
-        preco_val = validar_preco(preco)
-        if preco_val is None:
-            return jsonify({"error":"Preço inválido."}), 400
-    book_id = add_livro(titulo, autor, ano_val, preco_val)
-    return jsonify({"id": book_id}), 201
+    estoque = data.get("estoque")
 
-@app.route("/api/books/<int:book_id>/price", methods=["PUT"])
-def api_update(book_id):
-    data = request.json or {}
-    preco = data.get("preco")
-    preco_val = validar_preco(preco)
-    if preco_val is None:
-        return jsonify({"error":"Preço inválido."}), 400
-    ok = update_preco(book_id, preco_val)
-    if not ok:
-        return jsonify({"error":"Livro não encontrado."}), 404
-    return jsonify({"ok": True})
+    if not title or not author or not isbn or not book_id:
+        return jsonify({"error":"Título, autor, ISBN e Book ID são obrigatórios."}), 400
+    
+    # Validações de ano e preço...
+    ano_val = validar_ano(ano) if ano not in (None, "") else None
+    preco_val = validar_preco(preco) if preco not in (None, "") else None
+    estoque_val = int(estoque) if isinstance(estoque, (int, str)) and str(estoque).isdigit() else None
+    
+    book_id_val = add_livro(title, author, isbn, book_id, genre, publisher, ano_val, preco_val, estoque_val)
+    return jsonify({"id": book_id_val}), 201
 
-@app.route("/api/books/<int:book_id>", methods=["DELETE"])
-def api_delete(book_id):
-    ok = delete_livro(book_id)
-    if not ok:
-        return jsonify({"error":"Livro não encontrado."}), 404
-    return jsonify({"ok": True})
-
-@app.route("/api/search", methods=["GET"])
-def api_search():
-    q = request.args.get("q","").strip()
-    rows = search_autor(q) if q else []
-    books = [{"id":r[0],"titulo":r[1],"autor":r[2],"ano_publicacao":r[3],"preco":r[4]} for r in rows]
-    return jsonify(books)
-
-@app.route("/api/export", methods=["GET"])
-def api_export():
-    data = export_csv_to_memory()
-    return send_file(io.BytesIO(data), as_attachment=True, download_name="livros_exportados.csv", mimetype="text/csv")
+# ... (Mantenha as demais rotas)
 
 @app.route("/api/import", methods=["POST"])
 def api_import():
     if "file" not in request.files:
         return jsonify({"error":"Nenhum arquivo enviado."}), 400
     f = request.files["file"]
-    # A função import_csv_file agora trata a importação de dados de 'livros' e 'vendas'
+    # Esta função agora trata a importação de 'livros' (novo esquema), 'vendas' e 'clientes'
     inserted = import_csv_file(f.stream, f.filename)
     return jsonify({"inserted": inserted})
 
-@app.route("/api/backup", methods=["GET"])
-def api_backup():
-    p = backup_db(reason="manual_api")
-    return jsonify({"backup": p})
-
-@app.route("/api/backups", methods=["GET"])
-def api_list_backups():
-    ensure_directories()
-    files = sorted(BACKUP_DIR.glob(f"{BACKUP_PREFIX}*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return jsonify([str(p) for p in files])
-
-@app.route("/api/report/html", methods=["GET"])
-def api_report_html():
-    path = gerar_relatorio_html()
-    return send_file(path, as_attachment=True, download_name="relatorio_livros.html", mimetype="text/html")
-
-@app.route("/api/report/pdf", methods=["GET"])
-def api_report_pdf():
-    if not REPORTLAB_AVAILABLE:
-        return jsonify({"error":"reportlab não instalado. pip install reportlab"}), 400
-    path = gerar_relatorio_pdf()
-    return send_file(path, as_attachment=True, download_name="relatorio_livros.pdf", mimetype="application/pdf")
+# ... (Mantenha as demais rotas)
 
 # Run
 if __name__ == "__main__":
-    # rodar com python app.py
     init_db()
-    # Para evitar problemas com watchdog em algumas instalações, recomendamos rodar com python app.py
     app.run(host="127.0.0.1", port=5000, debug=True)
