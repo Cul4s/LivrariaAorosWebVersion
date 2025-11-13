@@ -40,12 +40,18 @@ def ensure_directories():
 
 def get_connection():
     ensure_directories()
-    return sqlite3.connect(str(DB_FILE))
+    # Usar row_factory para facilitar a leitura dos resultados (opcional, mas bom)
+    conn = sqlite3.connect(str(DB_FILE))
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
+    """Inicializa o banco de dados e cria as tabelas 'livros' e 'vendas'."""
     ensure_directories()
     with get_connection() as conn:
         cur = conn.cursor()
+        
+        # Tabela LIVROS (original)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS livros (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +59,36 @@ def init_db():
                 autor TEXT NOT NULL,
                 ano_publicacao INTEGER,
                 preco REAL
+            )
+        """)
+        
+        # Nova Tabela VENDAS
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vendas (
+                sale_id INTEGER PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                book_id TEXT,
+                title TEXT,
+                author TEXT,
+                genre TEXT,
+                publisher TEXT,
+                isbn TEXT,
+                quantity INTEGER,
+                unit_price REAL,
+                discount_pct REAL,
+                discount_amount REAL,
+                total_amount REAL,
+                customer_id TEXT,
+                customer_age INTEGER,
+                customer_gender TEXT,
+                city TEXT,
+                payment_method TEXT,
+                channel TEXT,
+                promo_code TEXT,
+                returned TEXT,
+                rating REAL,
+                stock_before INTEGER,
+                stock_after INTEGER
             )
         """)
         conn.commit()
@@ -101,8 +137,10 @@ def validar_preco(preco_str):
 def listar_livros():
     with get_connection() as conn:
         cur = conn.cursor()
+        # Usamos o row_factory acima, mas a lógica de retorno do Flask exige a lista de tuplas
         cur.execute("SELECT id, titulo, autor, ano_publicacao, preco FROM livros ORDER BY id")
-        return cur.fetchall()
+        # Converte para lista de tuplas se row_factory estiver em uso, para compatibilidade com o código original
+        return [tuple(row) for row in cur.fetchall()]
 
 def add_livro(titulo, autor, ano, preco):
     backup_db(reason="add_web")
@@ -144,7 +182,7 @@ def search_autor(q):
         cur = conn.cursor()
         like = f"%{q}%"
         cur.execute("SELECT id, titulo, autor, ano_publicacao, preco FROM livros WHERE autor LIKE ? ORDER BY id", (like,))
-        return cur.fetchall()
+        return [tuple(row) for row in cur.fetchall()]
 
 # ---------------- CSV ----------------
 def export_csv_to_memory():
@@ -160,29 +198,103 @@ def detect_delimiter(sample_line):
     return "," if sample_line.count(",") >= sample_line.count(";") else ";"
 
 def import_csv_file(file_stream, filename):
+    """Importa dados, detectando se é um arquivo de 'livros' ou 'vendas'."""
     text = file_stream.read().decode("utf-8")
     lines = text.splitlines()
     if not lines:
         return 0
+    
     delim = detect_delimiter(lines[0])
+    
+    # Usa DictReader para leitura
     reader = csv.DictReader(io.StringIO(text), delimiter=delim)
     rows = list(reader)
     if not rows:
         return 0
+    
+    # 1. Determina o tipo de tabela com base nos nomes das colunas
+    fieldnames = [f.lower() for f in reader.fieldnames]
+    
+    is_vendas = 'sale_id' in fieldnames and 'total_amount' in fieldnames
+    is_livros = 'titulo' in fieldnames or 'title' in fieldnames
+    
+    if not is_vendas and not is_livros:
+        return 0 # Formato desconhecido
+
     backup_db(reason="import_web")
     inserted = 0
     with get_connection() as conn:
         cur = conn.cursor()
-        for r in rows:
-            titulo = (r.get("titulo") or r.get("title") or "").strip()
-            autor = (r.get("autor") or r.get("author") or "").strip()
-            ano_raw = r.get("ano_publicacao") or r.get("year") or ""
-            preco_raw = r.get("preco") or r.get("price") or ""
-            ano = validar_ano(ano_raw) if ano_raw != "" else None
-            preco = validar_preco(preco_raw) if preco_raw != "" else None
-            cur.execute("INSERT INTO livros (titulo, autor, ano_publicacao, preco) VALUES (?, ?, ?, ?)",
-                        (titulo, autor, ano, preco))
-            inserted += 1
+
+        if is_vendas:
+            # Lógica de importação para a tabela VENDAS
+            vendas_cols = [
+                'sale_id', 'timestamp', 'book_id', 'title', 'author', 'genre', 'publisher', 'isbn', 
+                'quantity', 'unit_price', 'discount_pct', 'discount_amount', 'total_amount', 
+                'customer_id', 'customer_age', 'customer_gender', 'city', 'payment_method', 
+                'channel', 'promo_code', 'returned', 'rating', 'stock_before', 'stock_after'
+            ]
+            insert_sql = f"INSERT INTO vendas ({', '.join(vendas_cols)}) VALUES ({', '.join('?' * len(vendas_cols))})"
+            
+            for r in rows:
+                try:
+                    # Normaliza as chaves da linha para acesso case-insensitive
+                    row_data = {k.lower(): v for k, v in r.items()}
+                    
+                    # Prepara os dados, convertendo tipos e tratando valores vazios/nulos
+                    data = [
+                        int(row_data.get('sale_id')) if row_data.get('sale_id') else 0,
+                        row_data.get('timestamp') or None,
+                        row_data.get('book_id') or None,
+                        row_data.get('title') or None,
+                        row_data.get('author') or None,
+                        row_data.get('genre') or None,
+                        row_data.get('publisher') or None,
+                        row_data.get('isbn') or None,
+                        int(row_data.get('quantity')) if row_data.get('quantity') else None,
+                        float(row_data.get('unit_price')) if row_data.get('unit_price') else None,
+                        float(row_data.get('discount_pct')) if row_data.get('discount_pct') else None,
+                        float(row_data.get('discount_amount')) if row_data.get('discount_amount') else None,
+                        float(row_data.get('total_amount')) if row_data.get('total_amount') else None,
+                        row_data.get('customer_id') or None,
+                        int(row_data.get('customer_age')) if row_data.get('customer_age') else None,
+                        row_data.get('customer_gender') or None,
+                        row_data.get('city') or None,
+                        row_data.get('payment_method') or None,
+                        row_data.get('channel') or None,
+                        row_data.get('promo_code') or None,
+                        row_data.get('returned') or 'False', 
+                        float(row_data.get('rating')) if row_data.get('rating') else None,
+                        int(row_data.get('stock_before')) if row_data.get('stock_before') else None,
+                        int(row_data.get('stock_after')) if row_data.get('stock_after') else None
+                    ]
+                    
+                    # Validação mínima para campos NOT NULL
+                    if data[1] is None or data[0] == 0:
+                        continue 
+
+                    cur.execute(insert_sql, data)
+                    inserted += 1
+                except (ValueError, sqlite3.IntegrityError):
+                    # Ignora linhas com erro de conversão de tipo ou PK duplicada
+                    pass
+
+        elif is_livros:
+            # Lógica de importação original para a tabela LIVROS
+            for r in rows:
+                titulo = (r.get("titulo") or r.get("title") or "").strip()
+                autor = (r.get("autor") or r.get("author") or "").strip()
+                ano_raw = r.get("ano_publicacao") or r.get("year") or ""
+                preco_raw = r.get("preco") or r.get("price") or ""
+                
+                ano = validar_ano(ano_raw) if ano_raw != "" else None
+                preco = validar_preco(preco_raw) if preco_raw != "" else None
+                
+                if titulo and autor:
+                    cur.execute("INSERT INTO livros (titulo, autor, ano_publicacao, preco) VALUES (?, ?, ?, ?)",
+                                (titulo, autor, ano, preco))
+                    inserted += 1
+        
         conn.commit()
     return inserted
 
@@ -299,6 +411,7 @@ def api_import():
     if "file" not in request.files:
         return jsonify({"error":"Nenhum arquivo enviado."}), 400
     f = request.files["file"]
+    # A função import_csv_file agora trata a importação de dados de 'livros' e 'vendas'
     inserted = import_csv_file(f.stream, f.filename)
     return jsonify({"inserted": inserted})
 
