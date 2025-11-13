@@ -1,0 +1,11 @@
+book_id,isbn,title,author,genre,publisher,ano_publicacao,preco,estoque
+B001,9788535902778,Dom Casmurro,Machado de Assis,Romance,Companhia das Letras,1899,39.9,20
+B002,9788520925833,Memórias Póstumas de Brás Cubas,Machado de Assis,Realismo,Editora Globo,1881,42.5,15
+B003,9788582850132,O Alquimista,Paulo Coelho,Ficção,Rocco,1988,45.0,50
+B004,9788575427583,1984,George Orwell,Distopia,Companhia das Letras,1949,54.9,40
+B005,9788525053470,Grande Sertão: Veredas,Guimarães Rosa,Romance,Editora Nova Fronteira,1956,59.9,12
+B006,9788551001235,A Revolução dos Bichos,George Orwell,Satira,Companhia das Letras,1945,34.9,35
+B007,9788520926168,O Cortiço,Aluísio Azevedo,Naturalismo,Editora Ática,1890,31.5,25
+B008,9788577990702,Capitães da Areia,Jorge Amado,Romance,Saraiva,1937,37.9,18
+B009,9788571644045,O Pequeno Príncipe,Antoine de Saint-Exupéry,Infantil,HarperCollins,1943,29.9,60
+B010,9788595083273,It,Stephen King,Terror,Suma de Letras,1986,84.9,10
